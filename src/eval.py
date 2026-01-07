@@ -28,7 +28,7 @@ def get_args():
         "--model_path",
         type=str,
         required=True,
-        help="Path to .pth model weights"
+        help="Path to trained model weights (.pth or .pt)"
     )
 
     parser.add_argument(
@@ -56,9 +56,10 @@ def get_args():
 
 
 def build_model(device):
-    model = models.resnet18(pretrained=False)
+    # ---- ResNet50 ----
+    model = models.resnet50(pretrained=False)
 
-    # 1-channel input
+    # 1-channel MRI input
     model.conv1 = nn.Conv2d(
         1, 64, kernel_size=7, stride=2, padding=3, bias=False
     )
@@ -77,10 +78,11 @@ def build_model(device):
 
 def main():
     args = get_args()
+    device = torch.device(args.device)
 
-    print("Using device:", args.device)
+    print("Using device:", device)
 
-    # Validation / test transforms 
+    # Evaluation transforms
     transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=1),
         transforms.Resize(256),
@@ -105,8 +107,9 @@ def main():
     print("Number of samples:", len(dataset))
 
     # Model
-    model = build_model(args.device)
-    model.load_state_dict(torch.load(args.model_path, map_location=args.device))
+    model = build_model(device)
+    state_dict = torch.load(args.model_path, map_location=device)
+    model.load_state_dict(state_dict, strict=True)
 
     all_labels = []
     all_probs = []
@@ -114,8 +117,8 @@ def main():
 
     with torch.no_grad():
         for images, labels in loader:
-            images = images.to(args.device)
-            labels = labels.to(args.device)
+            images = images.to(device)
+            labels = labels.to(device)
 
             outputs = model(images)
             probs = torch.sigmoid(outputs).squeeze(1)
@@ -131,9 +134,9 @@ def main():
 
     # Metrics
     acc = accuracy_score(all_labels, all_preds)
-    prec = precision_score(all_labels, all_preds)
-    rec = recall_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds)
+    prec = precision_score(all_labels, all_preds, zero_division=0)
+    rec = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
 
     try:
         roc_auc = roc_auc_score(all_labels, all_probs)

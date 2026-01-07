@@ -25,7 +25,6 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -54,10 +53,12 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=2,
                         help="DataLoader workers")
 
+    parser.add_argument("--pretrained_weights", type=str, required=True,
+                        help="Path to ResNet50 pretrained .pt file")
+
     return parser.parse_args()
 
 
-# Main
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -71,8 +72,11 @@ def main():
     LR = args.lr
     WEIGHT_DECAY = args.weight_decay
     EPOCHS = args.epochs
+    WEIGHTS_PATH = args.pretrained_weights
 
+    # -------------------------
     # Transforms
+    # -------------------------
     train_transform = transforms.Compose([
         transforms.Grayscale(num_output_channels=1),
         transforms.Resize(256),
@@ -90,17 +94,16 @@ def main():
         transforms.Normalize([0.5], [0.5])
     ])
 
-    # Datasets and Dataloaders
+    # -------------------------
+    # Dataset & Split
+    # -------------------------
     full_dataset = datasets.ImageFolder(root=DATA_DIR, transform=train_transform)
 
     total_size = len(full_dataset)
     train_size = int(0.8 * total_size)
-    val_size = int(0.2 * total_size)
+    val_size = total_size - train_size
 
-    train_ds, val_ds = random_split(
-        full_dataset, [train_size, val_size]
-    )
-
+    train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
     val_ds.dataset.transform = eval_transform
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
@@ -111,23 +114,32 @@ def main():
     print("Class mapping:", full_dataset.class_to_idx)
     print(f"Train: {train_size}, Val: {val_size}")
 
-
-    # Pos Weight
+    # -------------------------
+    # POS_WEIGHT
+    # -------------------------
     targets = [label for _, label in full_dataset.samples]
     num_neg = targets.count(0)
     num_pos = targets.count(1)
 
     pos_weight = torch.tensor([num_neg / num_pos]).to(DEVICE)
-
     print(f"Pos_weight: {pos_weight.item():.4f}")
 
-    # Model
-    model = models.resnet18(pretrained=True)
+    # -------------------------
+    # MODEL: ResNet50
+    # -------------------------
+    model = models.resnet50(pretrained=False)
 
+    # Load custom pretrained weights
+    state_dict = torch.load(WEIGHTS_PATH, map_location="cpu")
+    model.load_state_dict(state_dict, strict=False)
+    print(f"Loaded pretrained weights from: {WEIGHTS_PATH}")
+
+    # Modify first conv for grayscale
     model.conv1 = nn.Conv2d(
         1, 64, kernel_size=7, stride=2, padding=3, bias=False
     )
 
+    # Replace classification head
     model.fc = nn.Sequential(
         nn.Linear(model.fc.in_features, 256),
         nn.ReLU(),
@@ -135,33 +147,33 @@ def main():
         nn.Linear(256, 1)
     )
 
-    # Freeze all
-    for p in model.parameters():
+    # Freeze conv1
+    for p in model.conv1.parameters():
         p.requires_grad = False
 
-    # Unfreeze last 2 blocks + head
-    for p in model.layer3.parameters():
-        p.requires_grad = True
-    for p in model.layer4.parameters():
-        p.requires_grad = True
-    for p in model.fc.parameters():
-        p.requires_grad = True
+    # Freeze layer1
+    for p in model.layer1.parameters():
+        p.requires_grad = False
 
     model = model.to(DEVICE)
 
+    # -------------------------
+    # Loss & Optimizer
+    # -------------------------
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=LR,
         weight_decay=WEIGHT_DECAY
     )
 
-
-    # Training loop
+    # -------------------------
+    # Training Loop
+    # -------------------------
     best_val_loss = np.inf
 
     for epoch in range(EPOCHS):
-        # TRAIN
         model.train()
         train_loss = 0
         train_correct = 0
